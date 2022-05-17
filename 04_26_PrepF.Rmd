@@ -1,0 +1,1107 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 72
+  chunk_output_type: inline
+
+output: pdf_document
+geometry: "left=1in,right=3in,top=1in,bottom=1in"
+---
+
+rm(list = ls()) #nettoie l'environnement
+
+# Loading and shaping data --------------------------------------------------
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+library(ggplot2)
+library(ggsignif)
+library(ggpubr)
+library(Publish)
+library(dplyr) #pour la SQL
+theme_set(theme_classic())
+library(latex2exp)
+library(reshape2) # pour passer de wide data à long data
+
+
+file <- "04_26_prepF_pourR.csv"
+res <- read.csv(file, sep = ";", header = TRUE)
+
+file3 <- "lamelles_surL_F.csv"
+lamelles_sur_Sc <- read.csv(file3, sep = ";", header = TRUE)
+
+file4 <- "lamelles_F.csv"
+lamelles <- read.csv(file4, sep = ";", header = TRUE)
+
+file5 <- "mitocS_F.csv"
+mitocS <- read.csv(file5, sep = ";", header = TRUE)
+
+file6 <- "mito_surS_F.csv"
+mitoc_surS <- read.csv(file6, sep = ";", header = TRUE)
+
+scale =  0.2983 #pixels per nm
+scale3 = 0.5967
+```
+
+Scaling values and shaping dataframe
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+#/!\ NE PAS RÉEXECUTER!!!!!
+res$surface_cell[res$Sectioning != 3] <- res$surface_cell[res$Sectioning != 3]/(scale*scale)
+res$surface_cell[res$Sectioning == 3] <- res$surface_cell[res$Sectioning == 3]/(scale3*scale3)
+res$S_vacuole_tot[res$Sectioning != 3] <- res$S_vacuole_tot[res$Sectioning != 3]/(scale*scale)
+res$S_vacuole_tot[res$Sectioning == 3] <- res$S_vacuole_tot[res$Sectioning == 3]/(scale3*scale3)
+res$S_lipid_tot[res$Sectioning != 3] <- res$S_lipid_tot[res$Sectioning != 3]/(scale*scale)
+res$S_lipid_tot[res$Sectioning == 3] <- res$S_lipid_tot[res$Sectioning == 3]/(scale3*scale3)
+res$S_sucre_tot[res$Sectioning != 3] <- res$S_sucre_tot[res$Sectioning != 3]/(scale*scale)
+res$S_sucre_tot[res$Sectioning == 3] <- res$S_sucre_tot[res$Sectioning == 3]/(scale3*scale3)
+res$S_noyau_zoom[res$Sectioning != 3] <- res$S_noyau_zoom[res$Sectioning != 3]/(scale*scale)
+res$S_noyau_zoom[res$Sectioning == 3] <- res$S_noyau_zoom[res$Sectioning == 3]/(scale3*scale3)
+res$S_euchromatine[res$Sectioning != 3] <- res$S_euchromatine[res$Sectioning != 3]/(scale*scale)
+res$S_euchromatine[res$Sectioning == 3] <- res$S_euchromatine[res$Sectioning == 3]/(scale3*scale3)
+res$S_nucleole_zoom[res$Sectioning != 3] <- res$S_nucleole_zoom[res$Sectioning != 3]/(scale*scale)
+res$S_nucleole_zoom[res$Sectioning == 3] <- res$S_nucleole_zoom[res$Sectioning == 3]/(scale3*scale3)
+res$S_heterochromatin[res$Sectioning != 3] <- res$S_heterochromatin[res$Sectioning != 3]/(scale*scale)
+res$S_heterochromatin[res$Sectioning == 3] <- res$S_heterochromatin[res$Sectioning == 3]/(scale3*scale3)
+
+res$division[res$division == "1*"] <- 1
+
+lamelles[c(65:99,164:198,264:297),2] <- lamelles[c(65:99,164:198,264:297),2]/(scale3)
+lamelles[c(1:64,100:163,199:263,298:555),2] <- lamelles[c(1:64,100:163,199:263,298:555),2]/(scale)
+
+mitocS$value[mitocS$Lumiere == "Dark3"] <- mitocS$value[mitocS$Lumiere == "Dark3"]/(scale3*scale3)
+mitocS$value[mitocS$Lumiere != "Dark3"] <- mitocS$value[mitocS$Lumiere != "Dark3"]/(scale*scale)
+mitocS$Lumiere[mitocS$Lumiere == "Dark3"] <- "Dark"
+
+res$pourcent_noyau <- res$S_noyau_zoom/res$surface_cell
+res$pourcent_nucleole <- res$S_nucleole_zoom/res$surface_cell
+res$fusion_ou_pas <- res$X.fusion.si.chloro.visible.et.flou...2
+res$fusion_ou_pas[res$fusion_ou_pas > 1] <- 1
+
+res <- melt(res, a.rm = FALSE, id.vars = c("Lumiere", "Nom","division"))
+res$value <- as.double(res$value) #they were converted into strings
+```
+Caution : no Sec3 taken into account for mitochondriae
+
+# Functions used later on 
+
+## Statistical analysis
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+function_stat <- function(df) {
+  df_d <- filter(df, Lumiere == 'Dark')$value
+  df_l <- filter(df, Lumiere == 'Light')$value
+  n_d <- length(df_d) #number of points measured for the dark
+  n_l <- length(df_l)
+  large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+  shapirotxt <- ""
+  vartxt <- ""
+
+  if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    cat("Population size is too small to compare and/or all measures are the same \n.")
+    p_value = 1
+    return(p_value)
+  }
+  
+  else {
+    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer((normal_d > 0.05) & (normal_l > 0.05))
+    if (N == 1) { #samples normally distributed
+      shapirotxt <- paste0("Samples are normally distributed (shapiro test) \n *p-value dark = ", round(normal_d,3), ", p-value light = ", round(normal_l,3),".*\n")
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances, F test
+        vartxt <- paste0("Variances are considered equal, *p-value = ", round(var.test(df_d,df_l)$p.value,3),".*\n")
+        p_value <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%,"
+      }
+      else { #different variances
+        vartxt <- paste0("Variances are not equal, *p-value = ", round(var.test(df_d,df_l)$p.value,3),".*\n")
+        p_value <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%,"
+      }
+    }
+    
+    else{ #variables not normally distributed 
+       shapirotxt <- paste0("Samples are not normally distributed (shapiro test),\n *p-value dark = ", round(normal_d,3), ", p-value light = ", round(normal_l,3),".*\n")
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        p_value <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%,"
+      }
+      if (large_sample == 0) {
+        p_value <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%,"
+      }
+    }
+    cat(test_used, "**p-value = ", round(p_value,5),"**","\n")
+    return(p_value)
+  }
+}
+```
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+comp_freq <- function(df) {
+  dat <- data.frame(row.names = c("Dark","Light"), No = c(df[1,3]$count,df[3,3]$count), Yes = c(df[2,3]$count,df[4,3]$count))
+  
+  n1 <- dat[1,1] + dat[1,2]
+  n2 <- dat[2,1] + dat[2,2]
+  
+  if ( (n1 < 3) == T | (n2 < 3) == T | is.na(n1) == T |
+      is.na(n2) == T ) {
+    return("Chi2 can't be applied")
+  }
+  
+  f <- (dat[1,2] + dat[2,2])/(n1+n2)
+  
+  if ( (n1*f <5) == T | (n2*f<5) == T| (n1*(1-f)<5) == T | 
+       (n2*(1-f)<5) ==T | ((n1+n2) < 50) == T ) {
+    return("Chi2 can't be applied")
+  }
+  
+  pvalue <- chisq.test(dat)$p.value
+  
+  psign <- c("NS","*", "**", "***")
+  pindex <- as.integer(pvalue >= 0.05) + 
+    as.integer((pvalue < 0.05) & (pvalue >= 0.01))*2 + 
+    as.integer((pvalue < 0.01) & (pvalue >= 0.001))*3 +
+    as.integer(pvalue < 0.001)*4
+  
+  L <- data.frame(c(psign[pindex],pvalue))
+  knitr::kable(L, caption = "Red = Present, Blue = Absent", align = "cccc",
+               col.names = c("p-value"))
+}
+```
+
+## Plot
+
+We have 3 types of plots : scaled plots, pourcent plots and proportion plots
+
+### Scaled plot
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width = 5, fig.height = 5.8, dpi =300, fig.align = "center"}
+scaled_plot <- function(df,pvalue, title, saving_name) { 
+  psign <- c("NS","*", "**", "***")
+  pindex <- as.integer(pvalue >= 0.05) + 
+    as.integer((pvalue < 0.05) & (pvalue >= 0.01))*2 + 
+    as.integer((pvalue < 0.01) & (pvalue >= 0.001))*3 +
+    as.integer(pvalue < 0.001)*4
+  cat("\n")
+  cat("## ", title)
+  
+  plot1 <- ggplot(df, aes(x=Lumiere , y=value/1000000, fill= Lumiere)) + 
+    geom_violin() + 
+    geom_jitter(size = 0.2, width = 0.1, height = 0.05) +
+    scale_fill_manual(labels = c(paste("Dark (N=",length(filter(df, Lumiere == "Dark")[,2]),")", sep = ""),
+                                 paste("Light (N=",length(filter(df, Lumiere == "Light")[,2]), ")", sep = "")),
+                      values = c("#f2f2f2", "#feefae")) +
+    stat_summary(fun = "mean", geom = "crossbar", color = "#C34343", 
+                size = 0.3) + 
+    stat_summary(fun.data = "mean_cl_normal", geom = "errorbar", 
+                 color = "#C34343",
+                 width = 0.4, alpha = 0.7) + 
+    ylab(TeX(r'(µm$^{2}$)')) + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.title.y = element_text(size = 15),
+          axis.text.y = element_text(size = 15), 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 15, margin = margin(0,2,0,0, unit = "in"))) +
+    geom_signif(annotations = c(psign[pindex]), y_position = c(1.1*max(df$value)/1000000), xmin = c(1), xmax = c(2))
+  
+   ggsave(plot1, file=paste0(saving_name,".png"), width = 5, height = 5.8, units = "in", dpi=300)
+   
+  cat("\n\n\n")
+  function_stat(df)
+  cat("\n\n\n")
+  print(plot1)
+  cat("\n\n\n")
+  }
+  
+```
+ 
+### Pourcentage plot
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width = 5, fig.height = 5.8, dpi = 300,  fig.align = "center"}
+
+pourcent_plot <- function(df, pourcent, pvalue, title, saving_name) { 
+  #pourcent => do we multiply value by 1 or by 100?
+  
+  psign <- c("NS","*", "**", "***")
+  pindex <- as.integer(pvalue >= 0.05) + 
+    as.integer((pvalue < 0.05) & (pvalue >= 0.01))*2 + 
+    as.integer((pvalue < 0.01) & (pvalue >= 0.001))*3 +
+    as.integer(pvalue < 0.001)*4
+  cat("\n")
+  cat("## ", title)
+
+  plot2 <- ggplot(df, aes(x=Lumiere , y=value*pourcent, fill= Lumiere)) + 
+    geom_violin() + 
+    geom_jitter(size = 0.2, width = 0.1, height = 0.05) +
+    scale_fill_manual(labels = c(paste("Dark (N=",length(filter(df, Lumiere == "Dark")[,2]),")", sep = ""),
+                                 paste("Light (N=",length(filter(df, Lumiere == "Light")[,2]), ")", sep = "")),
+                      values = c("#f2f2f2", "#feefae")) +
+    stat_summary(fun = "mean", geom = "crossbar", color = "#C34343", 
+                size = 0.3) + 
+    stat_summary(fun.data = "mean_cl_normal", geom = "errorbar", 
+                 color = "#C34343",
+                 width = 0.4, alpha = 0.7) + 
+    ylab("%") + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.title.y = element_text(size = 15),
+          axis.text.y = element_text(size = 15), 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 15, margin = margin(0,2,0,0, unit = "in")))+
+    geom_signif(annotations = c(psign[pindex]), y_position = c(1.1*max(df$value)*pourcent), xmin = c(1), xmax = c(2))
+
+  ggsave(plot2, file=paste0(saving_name,".png"), width = 5, height = 5.8, units = "in", dpi=300)
+   
+  cat("\n\n\n")
+  function_stat(df)
+  cat("\n\n\n")
+  print(plot2)
+  cat("\n\n\n")
+  }
+  
+```
+ 
+ 
+### Unscaled plot
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width = 5, fig.height = 5.8, dpi = 300, fig.align = "center"}
+
+unscaled_plot <- function(df, pvalue, title, saving_name, factor = 1) { 
+  #pourcent => do we multiply value by 1 or by 100?
+  
+  psign <- c("NS","*", "**", "***")
+  pindex <- as.integer(pvalue >= 0.05) + 
+    as.integer((pvalue < 0.05) & (pvalue >= 0.01))*2 + 
+    as.integer((pvalue < 0.01) & (pvalue >= 0.001))*3 +
+    as.integer(pvalue < 0.001)*4
+  cat("\n")
+  cat("## ", title)
+
+  plot2 <- ggplot(df, aes(x=Lumiere , y=value*factor, fill= Lumiere)) + 
+    geom_violin() + 
+    geom_jitter(size = 0.2, width = 0.1, height = 0.05) +
+    scale_fill_manual(labels = c(paste("Dark (N=",length(filter(df, Lumiere == "Dark")[,2]),")", sep = ""),
+                                 paste("Light (N=",length(filter(df, Lumiere == "Light")[,2]), ")", sep = "")),
+                      values = c("#f2f2f2", "#feefae")) +
+    stat_summary(fun = "mean", geom = "crossbar", color = "#C34343", 
+                size = 0.3) + 
+    stat_summary(fun.data = "mean_cl_normal", geom = "errorbar", 
+                 color = "#C34343",
+                 width = 0.4, alpha = 0.7) + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_text(size = 15), 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 15, margin = margin(0,2,0,0, unit = "in"))) + 
+    geom_signif(annotations = c(psign[pindex]), y_position = c(1.1*max(df$value)*factor), xmin = c(1), xmax = c(2)) 
+
+   ggsave(plot2, file=paste0(saving_name,".png"), width = 5, height = 5.8, units = "in", dpi=300)
+   
+  cat("\n\n\n")
+  function_stat(df)
+  cat("\n\n\n")
+  print(plot2)
+  cat("\n\n\n")
+  }
+  
+```
+
+### Diagram plot
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width = 5, fig.height = 5.8, dpi = 300, fig.align = "center"}
+
+#Only takes values that are 1 or 0
+diagram_plot <- function(df, title, saving_name) { 
+  if(length(unique(df$value)) > 2){
+    return("Verify data format")
+  }
+  cat("\n")
+  cat("## ", title)
+  
+rm(res2)
+res2 <- df %>% 
+  group_by(Lumiere, value) %>% 
+  summarise(count = n()) %>% 
+  mutate(perc = count/sum(count))
+
+dprop <- ggplot(filter(res2, Lumiere == "Dark"), 
+               aes(x = "", y = perc*100, fill=factor(value))) +
+geom_bar(stat="identity",color = "white") +
+  geom_label(aes(x=1.4, label = paste(round(perc*100),"%",sep = "")),
+            position = position_stack(vjust = 0.5, reverse = FALSE),
+            size = 7, alpha = 0.3) +
+  coord_polar(theta = "y") +
+  theme_void() + 
+  scale_fill_manual(values = c("#A7B9FD","#FAAFAF", "white")) +
+  theme(legend.position = "none")
+
+lprop <- ggplot(filter(res2, Lumiere == "Light"), 
+               aes(x = "", y = perc*100, fill=factor(value))) +
+  geom_bar(stat="identity",color = "white") +
+  geom_label(aes(x=1.4, label = paste(round(perc*100),"%",sep = "")),
+            position = position_stack(vjust = 0.5, reverse = FALSE),
+            size = 7, alpha = 0.3) +
+  coord_polar(theta = "y") +
+  theme_void() + 
+  scale_fill_manual(values = c("#A7B9FD","#FAAFAF", "white")) +
+  theme(legend.position = "none")
+
+fig <- ggarrange(dprop, lprop, ncol = 2, nrow = 1,labels = c("Dark", "Light"), label.y = 0.3, label.x = 0.25)
+cat("\n\n")
+print(fig)
+
+ggsave(fig, file=paste0(saving_name,".png"), width = 5, height = 5.8, units = "in", dpi=300)
+
+comp_freq(res2)
+  }
+```
+
+# Main code
+
+## Cell area
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+res3 <- filter(res, division == 0)
+res3 <- res3 %>% filter(variable == "surface_cell")
+scaled_plot(res3, function_stat(res3), "Non-dividing cells area", "Scell_nondiv")
+function_stat(res3)
+
+
+res3 <- res
+res3 <- res3 %>% filter(variable == "surface_cell")
+scaled_plot(res3, function_stat(res3), "All cells area", "Scell_all")
+
+
+res3 <- res
+res3 <- res3 %>% filter(variable == "surface_cell")  %>% filter(value/1000000 > 0.5)
+scaled_plot(res3, function_stat(res3), "All cells area - one outlier removed", "Scell_all_without1")
+
+
+
+res3 <- filter(res, division != 0)
+res3 <- res3 %>% filter(variable == "surface_cell")
+scaled_plot(res3,function_stat(res3),"Dividing cells area", "Scell_div")
+
+```
+
+## Proportion de cellules en division
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res$div_ou_pas <- res$division
+res$div_ou_pas[res$div_ou_pas >0] <- 1
+
+rm(res2)
+res2 <- res %>% 
+  group_by(Lumiere, div_ou_pas) %>% 
+  summarise(count = n()) %>% 
+  mutate(perc = count/sum(count))
+
+dprop <- ggplot(filter(res2, Lumiere == "Dark"), 
+               aes(x = "", y = perc*100, fill=factor(div_ou_pas))) +
+ geom_bar(stat="identity",color = "white") +
+  geom_label(aes(x=1.4, label = paste(round(perc*100),"%", sep = "")),
+            position = position_stack(vjust = 0.5, reverse = FALSE),
+            size = 7, alpha = 0.3) +
+  coord_polar(theta = "y") +
+  theme_void() + 
+  scale_fill_manual(values = c("#A7B9FD","#FAAFAF", "white")) +
+  theme(legend.position = "none")
+
+lprop <- ggplot(filter(res2, Lumiere == "Light"), 
+               aes(x = "", y = perc*100, fill=factor(div_ou_pas))) +
+  geom_bar(stat="identity",color = "white") +
+  geom_label(aes(x=1.4, label = paste(round(perc*100),"%",sep = "")),
+            position = position_stack(vjust = 0.5, reverse = FALSE),
+            size = 7, alpha = 0.3) +
+  coord_polar(theta = "y") +
+  theme_void() + 
+  scale_fill_manual(values = c("#A7B9FD","#FAAFAF", "white")) +
+  theme(legend.position = "none")
+
+fig <- ggarrange(dprop, lprop, ncol = 2, nrow = 1,labels = c("Dark", "Light"), label.y = 0.3, label.x = 0.25)
+fig
+comp_freq(res2)
+```
+
+## Nombre de golgis
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+res3 <- res %>% filter(variable == "golgi") %>% filter(is.na(value)==F)
+unscaled_plot(res3, function_stat(res3), "Number of golgi", "golgi")
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "golgi") %>% filter(is.na(value) == F)
+res3$value[res3$value >0] <- 1
+diagram_plot(res3,"Proportion of images with a golgi","golgioupa")
+```
+
+## Surface Vacuole
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- res %>% filter(variable == "X.S_V.S_cell") %>% filter(value != 0)
+pourcent_plot(res3,1, function_stat(res3), "Vacuole's proportion of the cells - if > 0%", "vacPourcent_sivac")
+
+res3 <- res %>% filter(variable == "X.S_V.S_cell")
+pourcent_plot(res3,1, function_stat(res3), "Vacuole's proportion of the cell", "vacPourcent_all")
+
+res3 <- res %>% filter(variable == "S_vacuole_tot") %>% filter(value != 0)
+scaled_plot(res3, function_stat(res3), "Vacuole's area in the cell - if non null", "vacS_sivac")
+ ##
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "nb_vacuoles")
+res3$value[res3$value >0] <- 1
+diagram_plot(res3,"Proportion of images with a vacuole","vacoupa")
+```
+
+## Surface lipides
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- res %>% filter(variable == "X.S_L.S_cell") %>% filter(value != 0)
+pourcent_plot(res3, 1, function_stat(res3), "Lipid content of the cells - if > 0%", "lipidPourcent_silip")
+
+res3 <- res %>% filter(variable == "X.S_L.S_cell") %>% filter(value != 0) %>% filter(value < 100)
+pourcent_plot(res3,1, function_stat(res3), "Lipid content of the cells - if > 0% and <100%", "lipidPourcent_silip_sansout")
+
+res3 <- res %>% filter(variable == "S_lipid_tot") %>% filter(value != 0)
+scaled_plot(res3, function_stat(res3), "Lipid content of the cells - if > 0µm2", "lipidS_silip")
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "nb_lipids")
+res3$value[res3$value >0] <- 1
+diagram_plot(res3,"Proportion of images with lipid·s","lipoupa")
+```
+
+## Surface sucres
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- res %>% filter(variable == "X.S_s.S_cell")%>% filter(value != 0)
+
+pourcent_plot(res3,1, function_stat(res3), "Chrysolaminarin's proportion of the cell - if > 0%", "chrysoPourcent_siChryso")
+
+res3 <- res %>% filter(variable == "X.S_s.S_cell") %>% filter(value != 0) %>% filter(value < 20)
+pourcent_plot(res3,1, function_stat(res3), "Chrysolaminarin's proportion of the cell - if > 0%, one outlier removed", "chrysoPourcent_siChryso_sansout")
+
+res3 <- res %>% filter(variable == "S_sucre_tot") %>% filter(value != 0)
+scaled_plot(res3, function_stat(res3), "Chrysolaminarin's area in the cell - if non null", "chrysoS_sichryso")
+
+
+res3 <- res %>% filter(variable == "S_sucre_tot") %>% filter(value != 0) %>% filter(value/1000000 < 0.5)
+scaled_plot(res3, function_stat(res3), "Chrysolaminarin's area in the cell - if non null, one outlier removed", "chrysoS_sichryso_sansout")
+
+res3 <- res %>% filter(variable == "nb_sucres")
+unscaled_plot(res3, function_stat(res3),title = "Number of chrysolaminarin droplets", "nbsucres")
+
+res3 <- res %>% filter(variable == "nb_sucres") %>% filter(value>0)
+unscaled_plot(res3, function_stat(res3),title = "Number of chrysolaminarin droplets, if > 0", "nbsucres_sans0")
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis',fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "nb_sucres")
+res3$value[res3$value >0] <- 1
+diagram_plot(res3,"Proportion of images with chrysolaminarin","sucroupa")
+```
+
+## Largeur lamelle
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+res3 <- lamelles %>% filter(value != 0)
+unscaled_plot(res3, function_stat(res3), "Lamellae width (nm) - if > 0nm", "lamellesL")
+
+res3 <- lamelles_sur_Sc %>% filter(10*value > 0)
+unscaled_plot(res3, function_stat(res3), "Lamellae width normalized by the cell's dimension", "lamelle_surS", factor = 10)
+
+res3 <- lamelles_sur_Sc %>% filter(10*value > 0) %>% filter(value < 1)
+unscaled_plot(res3, function_stat(res3), "1000*Lamellae width normalized by the cell's dimension - 3 outliers removed", "lamelle_surS_no_out", factor = 10)
+
+```
+
+## Heterochromatine sur euchromatine
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- res %>% filter(variable == "hetero.euch") %>% filter(is.na(value) == F)
+res3$value <- res3$value/100
+unscaled_plot(res3, function_stat(res3),"DNA condensation ratio (heterochromatin/euchromatin)", "heteroeuch_all")
+
+
+res3 <- res %>% filter(variable == "hetero.euch") %>% 
+  filter(is.na(value) == F) %>%
+  filter(value > 0)
+res3$value <- res3$value/100
+unscaled_plot(res3, function_stat(res3),"DNA condensation ratio (heterochromatin/euchromatin) - 1 outlier removed", "heteroeuch_all_sans_out")
+
+
+res3 <- res %>% filter(division == 0) %>%  
+  filter(variable == "hetero.euch") %>% 
+  filter(is.na(value) == F) %>%
+  filter(value >0)
+res3$value <- res3$value/100
+unscaled_plot(res3, function_stat(res3),"DNA condensation ratio (heterochromatin/euchromatin) - non dividing cells, one outlier removed", "heteroeuch_all_div0")
+
+```
+
+## Comparison of DNA condensation levels between dividing, recently divided and non dividing cells
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+df <- res %>% filter(variable == "hetero.euch") %>% filter(value > -100)
+
+
+pvalues <- c(0,0,0)
+pindex <- c(0,0,0)
+
+
+##
+
+df_d <- filter(df, division == 0)$value
+df_l <- filter(df, division == 1)$value
+n_d <- length(df_d) #number of points measured for the dark
+n_l <- length(df_l)
+large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+
+if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    print("Population size is too small to compare and/or all measures are the same")
+    pvalues[1] <- 1
+    }
+  
+if ( ((n_d >= 3)&(n_l >= 3)) & ((length(unique(df_d)) >= 2)&(length(unique(df_l)) >= 2) )){
+    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer(normal_d > 0.05) & (normal_l > 0.05)
+    if (N == 1) { #samples normally distributed
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances
+        pvalues[1] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%"
+      }
+      else { #different variances
+        pvalues[1] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%"
+      }
+    }
+    else{ #variables not normally distributed 
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        pvalues[1] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%"
+      }
+      if (large_sample == 0) {
+       pvalues[1] <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%"
+      }
+    }
+    print(paste0(test_used, ", p-value = ", round(pvalues[1],5)))
+}
+
+##
+
+df_d <- filter(df, division == 1)$value
+df_l <- filter(df, division == 2)$value
+n_d <- length(df_d) #number of points measured for the dark
+n_l <- length(df_l)
+large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+
+  if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    print("Population size is too small to compare and/or all measures are the same")
+    pvalues[2] <- 1
+    }
+  
+if ( ((n_d >= 3)&(n_l >= 3)) & ((length(unique(df_d)) >= 2)&(length(unique(df_l)) >= 2) )){    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer(normal_d > 0.05) & (normal_l > 0.05)
+    if (N == 1) { #samples normally distributed
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances
+        pvalues[2] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%"
+      }
+      else { #different variances
+        pvalues[2] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%"
+      }
+    }
+    else{ #variables not normally distributed 
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        pvalues[2] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%"
+      }
+      if (large_sample == 0) {
+       pvalues[2] <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%"
+      }
+    }
+    print(paste0(test_used, ", p-value = ", round(pvalues[2],5)))
+  }
+
+##
+
+df_d <- filter(df, division == 0)$value
+df_l <- filter(df, division == 2)$value
+n_d <- length(df_d) #number of points measured for the dark
+n_l <- length(df_l)
+large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+
+  if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    print("Population size is too small to compare and/or all measures are the same")
+    pvalues[3] <- 1
+    }
+  
+if ( ((n_d >= 3)&(n_l >= 3)) & ((length(unique(df_d)) >= 2)&(length(unique(df_l)) >= 2) )){    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer(normal_d > 0.05) & (normal_l > 0.05)
+    if (N == 1) { #samples normally distributed
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances
+        pvalues[3] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%"
+      }
+      else { #different variances
+        pvalues[3] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%"
+      }
+    }
+    else{ #variables not normally distributed 
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        pvalues[3] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%"
+      }
+      if (large_sample == 0) {
+       pvalues[3] <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%"
+      }
+    }
+    print(paste0(test_used, ", p-value = ", round(pvalues[3],5)))
+  }
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width = 5, fig.height = 5.8, fig.align = "center"}
+
+for (i in c(1,2,3)) {
+  psign <- c("NS","*", "**", "***")
+  pindex[i] <- as.integer(pvalues[i] >= 0.05) + 
+      as.integer((pvalues[i] < 0.05) & (pvalues[i] >= 0.01))*2 + 
+      as.integer((pvalues[i] < 0.01) & (pvalues[i] >= 0.001))*3 +
+      as.integer(pvalues[i] < 0.001)*4
+}
+  
+df[33,3] = 1
+  
+plot2 <- ggplot(df, aes(x=factor(division) , y=value, fill = factor(division))) + 
+    geom_violin() + 
+    geom_jitter(size = 0.2, width = 0.1, height = 0.05) +
+    stat_summary(fun = "mean", geom = "crossbar", color = "black", 
+                size = 0.3) + 
+    stat_summary(fun.data = "mean_cl_normal", geom = "errorbar", 
+                 color = "black",
+                 width = 0.4, alpha = 0.7) + 
+    theme(axis.title.x=element_blank(),
+          axis.title.y = element_text(size = 15),
+          axis.text.y = element_text(size = 15), 
+          legend.position = "none",
+          plot.title = element_text(size = 15, margin = margin(c(0,0,0.5,0), unit = "in")))+
+  scale_fill_manual(values = c("#F7C090", "#feefae", "#A9DFD0")) +
+  scale_x_discrete(labels = c("Non-dividing cell", "Recently divided cell", "Dividing cell")) +
+    geom_signif(annotations = c(psign[pindex]), y_position = c(270,270,310), xmin = c(1.02,2.02,1.02), xmax = c(1.98,2.98,2.98)) +
+    ggtitle("DNA condensation, depending on the state of the cell")
+ 
+  print(plot2)
+  ggsave(plot2, file=paste0("DNA condensation",".png"), width = 5, height = 5.8, units = "in", dpi=300)
+
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "S_noyau_zoom")
+res3$value[res3$value != 0] <- 1
+diagram_plot(res3,"Proportion of images with visible nucleus","noyauoupa")
+```
+
+## Surface noyau
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+res3 <- res %>% filter(variable == "S_noyau_zoom") %>% filter(value != 0)
+scaled_plot(res3, function_stat(res3), "Nucleus area", "nucleusS")
+
+res3 <- res %>% filter(variable == "pourcent_noyau") %>% filter(value != 0) %>%
+  filter(value < 1)
+pourcent_plot(res3, 100, function_stat(res3), "Nucleus area proportion", "nucleuspourcent")
+```
+
+## Surface nucleole
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- res %>% filter(variable == "S_nucleole_zoom") %>% filter(value != 0)
+scaled_plot(res3, function_stat(res3), "Nucleolus area", "nucleolusS")
+
+res3 <- res %>% filter(variable == "pourcent_nucleole") %>% filter(value != 0) %>%
+  filter(value < 1)
+pourcent_plot(res3, 100, function_stat(res3), "Nucleolus area proportion", "nucleoluspourcent")
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- res %>% filter(variable == "S_nucleole_zoom") %>% filter(value != 0)
+scaled_plot(res3, function_stat(res3), "Nucleolus area", "nucleolusS")
+
+res3 <- res %>% filter(variable == "pourcent_nucleole") %>% filter(value != 0) %>%
+  filter(value < 1)
+pourcent_plot(res3, 100, function_stat(res3), "Nucleolus area proportion", "nucleoluspourcent")
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+dnoyau <- sum(res[res$Lumiere == "Dark" & res$variable =="S_noyau_zoom",]$value > 0)
+lnoyau <- sum(res[res$Lumiere == "Light" & res$variable =="S_noyau_zoom",]$value > 0)
+dnucleole <- sum(res[res$Lumiere == "Dark" & res$variable =="S_nucleole_zoom",]$value > 0)
+lnucleole <- sum(res[res$Lumiere == "Light" & res$variable =="S_nucleole_zoom",]$value > 0)
+
+res2 <- data.frame(Lumiere = c("Dark","Dark","Light","Light"),
+                   value = c(0,1,0,1), 
+                   count = c(dnoyau-dnucleole, dnucleole,lnoyau-lnucleole,lnucleole),
+                   perc = c((dnoyau-dnucleole)/dnoyau, dnucleole/dnoyau, (lnoyau-lnucleole)/lnoyau, lnucleole/lnoyau))
+
+saving_name = "nucleoloupa"
+
+dprop <- ggplot(filter(res2, Lumiere == "Dark"), 
+               aes(x = "", y = perc*100, fill=factor(value))) +
+geom_bar(stat="identity",color = "white") +
+  geom_label(aes(x=1.4, label = paste(round(perc*100),"%",sep = "")),
+            position = position_stack(vjust = 0.5, reverse = FALSE),
+            size = 7, alpha = 0.3) +
+  coord_polar(theta = "y") +
+  theme_void() + 
+  scale_fill_manual(values = c("#A7B9FD","#FAAFAF", "white")) +
+  theme(legend.position = "none")
+
+lprop <- ggplot(filter(res2, Lumiere == "Light"), 
+               aes(x = "", y = perc*100, fill=factor(value))) +
+  geom_bar(stat="identity",color = "white") +
+  geom_label(aes(x=1.4, label = paste(round(perc*100),"%",sep = "")),
+            position = position_stack(vjust = 0.5, reverse = FALSE),
+            size = 7, alpha = 0.3) +
+  coord_polar(theta = "y") +
+  theme_void() + 
+  scale_fill_manual(values = c("#A7B9FD","#FAAFAF", "white")) +
+  theme(legend.position = "none")
+
+fig <- ggarrange(dprop, lprop, ncol = 2, nrow = 1,labels = c("Dark", "Light"), label.y = 0.3, label.x = 0.25)
+fig
+
+ggsave(fig, file=paste0(saving_name,".png"), width = 5, height = 5.8, units = "in", dpi=300)
+
+df <- res2
+##Comp freq
+#The scripted function can't be used because values in df are not in the same format
+comp_nucleolus <- function(df) {
+  dat <- data.frame(row.names = c("Dark","Light"), No = c(df[1,3],df[3,3]), Yes = c(df[2,3],df[4,3]))
+  n1 <- dat[1,1] + dat[1,2]
+  n2 <- dat[2,1] + dat[2,2]
+  if ( (n1 < 3) == T | (n2 < 3) == T | is.na(n1) == T | is.na(n2) == T ) {
+      return("Chi2 can't be applied")
+    }
+    
+  f <- (dat[1,2] + dat[2,2])/(n1+n2)
+  
+  if ( (n1*f <5) == T | (n2*f<5) == T| (n1*(1-f)<5) == T | 
+         (n2*(1-f)<5) ==T | ((n1+n2) < 50) == T ) {
+    return("Chi2 can't be applied")
+  }
+  
+  pvalue <- chisq.test(dat)$p.value
+  
+  psign <- c("NS","*", "**", "***")
+  pindex <- as.integer(pvalue >= 0.05) + 
+    as.integer((pvalue < 0.05) & (pvalue >= 0.01))*2 + 
+    as.integer((pvalue < 0.01) & (pvalue >= 0.001))*3 +
+    as.integer(pvalue < 0.001)*4
+  
+  L <- data.frame(c(psign[pindex],pvalue))
+  knitr::kable(L, caption = "Red = Present, Blue = Absent", align = "cccc",
+               col.names = c("p-value"))
+}
+comp_nucleolus(df)
+rm(saving_name, lnoyau, dnoyau, lnucleole, dnucleole)
+```
+
+## Globules chloroplastes
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+res3 <- res %>% filter(variable == "X.globules.chloro") %>% filter(value != 0)
+unscaled_plot(res3, function_stat(res3), "Plastoglobuli number", "globules")
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "X.globules.chloro")
+res3$value[res3$value >0] <- 1
+res3$value[is.na(res3$value) == T] <- 0
+diagram_plot(res3,"Proportion of images with plastoglobuli","globoupa")
+```
+
+## Flou chloroplaste
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+
+res3 <- res %>% filter(variable == "X.flou.si.chloro.visible")
+res3$value[res3$value < 2] <- 0
+diagram_plot(res3,"Proportion of images with plastoglobuli","globoupa")
+```
+
+## Fusion lamelles
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width=4, fig.align = "center"}
+res3 <- res %>% filter(variable == "fusion_ou_pas") %>% filter(is.na(value) == F)
+diagram_plot(res3,title = "Lamellae fusion","fusionoupa")
+```
+
+## Crêtes mitochondriales
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+res3 <- mitocS %>% filter(is.na(value) == F)
+unscaled_plot(res3, function_stat(res3), "Mitochondrial cristae area (nm2)", "mitoS")
+
+res3 <- mitoc_surS %>% filter(is.na(value) == F) %>% filter(value < 100)
+res3$value <- res3$value*100000
+unscaled_plot(res3, function_stat(res3), "Mitochondrial cristae area proportion (compared to cell area)", "mitopourcent")
+
+res3 <- mitoc_surS %>% filter(is.na(value) == F) %>% filter(value<1)
+res3$value <- res3$value*100000
+unscaled_plot(res3, function_stat(res3), "Mitochondrial cristae area proportion (compared to cell area*10,000) - outliers removed", "mitopourcent_nooutliers")
+```
+
+
+# Aditional plots
+
+### Dividing versus non-dividing cell area (light only)
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+
+res3 <- filter(res, Lumiere == "Light") %>% filter(division <2)
+res3$Lumiere[res3$division > 0] <- "Dark" #recently divided cells will be annotated as dark cells
+res3 <- res3 %>% filter(variable == "surface_cell")
+scaled_plot(res3, function_stat(res3), "Recently divided cells vs still cells", "Light_recentlyvsnondiv")
+
+res3 <- filter(res, Lumiere == "Light") %>% filter(division != 1)
+res3$Lumiere[res3$division > 0] <- "Dark" #recently divided cells will be annotated as dark cells
+res3 <- res3 %>% filter(variable == "surface_cell")
+scaled_plot(res3, function_stat(res3), "Dividing vs still cells area", "Light_divvsnondiv")
+
+res3 <- filter(res, Lumiere == "Dark") %>% filter(division <2)
+res3$Lumiere[res3$division == 0] <- "Light" #recently divided cells will be annotated as dark cells
+res3 <- res3 %>% filter(variable == "surface_cell")
+scaled_plot(res3, function_stat(res3), "Recently divided cells vs still cells", "Dark_recentlyvsnondiv")
+
+```
+
+### Storage content
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+file <- "04_26_prepF_pourR.csv"
+res4 <- read.csv(file, sep = ";", header = TRUE)
+
+res4$surface_cell[res4$Sectioning != 3] <- res4$surface_cell[res4$Sectioning != 3]/(scale*scale)
+res4$surface_cell[res4$Sectioning == 3] <- res4$surface_cell[res4$Sectioning == 3]/(scale3*scale3)
+res4$S_vacuole_tot[res4$Sectioning != 3] <- res4$S_vacuole_tot[res4$Sectioning != 3]/(scale*scale)
+res4$S_vacuole_tot[res4$Sectioning == 3] <- res4$S_vacuole_tot[res4$Sectioning == 3]/(scale3*scale3)
+res4$S_lipid_tot[res4$Sectioning != 3] <- res4$S_lipid_tot[res4$Sectioning != 3]/(scale*scale)
+res4$S_lipid_tot[res4$Sectioning == 3] <- res4$S_lipid_tot[res4$Sectioning == 3]/(scale3*scale3)
+
+res4$storage <- res4$S_lipid_tot + res4$S_vacuole_tot
+res4$storage_surS <- res4$storage/res4$surface_cell
+res4 <- melt(res4, a.rm = FALSE, id.vars = c("Lumiere", "Nom","division"))
+res4$value <- as.double(res4$value)
+
+res3 <- res4 %>% filter(variable == "storage")
+scaled_plot(res3, function_stat(res3), "Lipid + chrysolaminarin area", "lipidchryso")
+
+res3 <- res4 %>% filter(variable == "storage_surS")
+pourcent_plot(res3,100, function_stat(res3), "Lipid + chrysolaminarin proportion of the cell", "lipidchrysopourcent")
+```
+
+
+## DNA condensation in light depending on the division state
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis'}
+df <- res %>% filter(variable == "hetero.euch") %>% filter(value > -100) %>% filter(Lumiere == "Light")
+
+pvalues <- c(0,0,0)
+pindex <- c(0,0,0)
+
+
+##
+
+df_d <- filter(df, division == 0)$value
+df_l <- filter(df, division == 1)$value
+n_d <- length(df_d) #number of points measured for the dark
+n_l <- length(df_l)
+large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+
+if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    print("Population size is too small to compare and/or all measures are the same")
+    pvalues[1] <- 1
+    }
+  
+if ( ((n_d >= 3)&(n_l >= 3)) & ((length(unique(df_d)) >= 2)&(length(unique(df_l)) >= 2) )){
+    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer(normal_d > 0.05) & (normal_l > 0.05)
+    if (N == 1) { #samples normally distributed
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances
+        pvalues[1] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%"
+      }
+      else { #different variances
+        pvalues[1] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%"
+      }
+    }
+    else{ #variables not normally distributed 
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        pvalues[1] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%"
+      }
+      if (large_sample == 0) {
+       pvalues[1] <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%"
+      }
+    }
+    print(paste0(test_used, ", p-value = ", round(pvalues[1],5)))
+}
+
+##
+
+df_d <- filter(df, division == 1)$value
+df_l <- filter(df, division == 2)$value
+n_d <- length(df_d) #number of points measured for the dark
+n_l <- length(df_l)
+large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+
+  if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    print("Population size is too small to compare and/or all measures are the same")
+    pvalues[2] <- 1
+    }
+  
+if ( ((n_d >= 3)&(n_l >= 3)) & ((length(unique(df_d)) >= 2)&(length(unique(df_l)) >= 2) )){    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer(normal_d > 0.05) & (normal_l > 0.05)
+    if (N == 1) { #samples normally distributed
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances
+        pvalues[2] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%"
+      }
+      else { #different variances
+        pvalues[2] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%"
+      }
+    }
+    else{ #variables not normally distributed 
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        pvalues[2] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%"
+      }
+      if (large_sample == 0) {
+       pvalues[2] <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%"
+      }
+    }
+    print(paste0(test_used, ", p-value = ", round(pvalues[2],5)))
+  }
+
+##
+
+df_d <- filter(df, division == 0)$value
+df_l <- filter(df, division == 2)$value
+n_d <- length(df_d) #number of points measured for the dark
+n_l <- length(df_l)
+large_sample <- as.integer( (n_d > 30) & (n_l > 30)) # =1 if sample large enough, 0 otherwise
+
+  if( ((n_d < 3)|(n_l < 3)) | ((length(unique(df_d)) < 2)|(length(unique(df_l)) < 2) )) {
+    print("Population size is too small to compare and/or all measures are the same")
+    pvalues[3] <- 1
+    }
+  
+if ( ((n_d >= 3)&(n_l >= 3)) & ((length(unique(df_d)) >= 2)&(length(unique(df_l)) >= 2) )){    #Are samples normally distributed? 
+    normal_d <- shapiro.test(df_d)$p.value
+    normal_l <- shapiro.test(df_l)$p.value
+    N = as.integer(normal_d > 0.05) & (normal_l > 0.05)
+    if (N == 1) { #samples normally distributed
+      #Same variances?  
+      NVar <- as.integer(var.test(df_d,df_l)$p.value > 0.05)
+      if (NVar == 1) { #same variances
+        pvalues[3] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = T, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with equal variances), alpha = 5%"
+      }
+      else { #different variances
+        pvalues[3] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples normally distributed with different variances), alpha = 5%"
+      }
+    }
+    else{ #variables not normally distributed 
+      if (large_sample == 1) {
+        #Sample large enough to do a student test to compare the means
+        pvalues[3] <- t.test(x = df_d, y = df_l, alternative ="two.sided", var.equal = F, conf.level = 0.95)$p.value
+        test_used <- "Two-sided Student test (samples not normally distributed but large enough - n > 30), alpha = 5%"
+      }
+      if (large_sample == 0) {
+       pvalues[3] <- wilcox.test(x = df_d, y = df_l, alternative ="two.sided", conf.level = 0.95)$p.value
+        test_used <- "Two-sided Wilcoxon test (small samples not normally distributed), alpha = 5%"
+      }
+    }
+    print(paste0(test_used, ", p-value = ", round(pvalues[3],5)))
+  }
+```
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE, results = 'asis', fig.width = 5, fig.height = 5.8, fig.align = "center"}
+
+for (i in c(1,2,3)) {
+  psign <- c("NS","*", "**", "***")
+  pindex[i] <- as.integer(pvalues[i] >= 0.05) + 
+      as.integer((pvalues[i] < 0.05) & (pvalues[i] >= 0.01))*2 + 
+      as.integer((pvalues[i] < 0.01) & (pvalues[i] >= 0.001))*3 +
+      as.integer(pvalues[i] < 0.001)*4
+}
+  
+df[33,3] = 1
+  
+plot2 <- ggplot(df, aes(x=factor(division) , y=value, fill = factor(division))) + 
+    geom_violin() + 
+    geom_jitter(size = 0.2, width = 0.1, height = 0.05) +
+    stat_summary(fun = "mean", geom = "crossbar", color = "black", 
+                size = 0.3) + 
+    stat_summary(fun.data = "mean_cl_normal", geom = "errorbar", 
+                 color = "black",
+                 width = 0.4, alpha = 0.7) + 
+    theme(axis.title.x=element_blank(),
+          axis.title.y = element_text(size = 15),
+          axis.text.y = element_text(size = 15), 
+          legend.position = "none",
+          plot.title = element_text(size = 15, margin = margin(c(0,0,0.5,0), unit = "in")))+
+  scale_fill_manual(values = c("#F7C090", "#feefae", "#A9DFD0")) +
+  scale_x_discrete(labels = c("Non-dividing cell", "Recently divided cell", "Dividing cell")) +
+    geom_signif(annotations = c(psign[pindex]), y_position = c(270,270,310), xmin = c(1.02,2.02,1.02), xmax = c(1.98,2.98,2.98)) +
+    ggtitle("DNA condensation, depending on the state of the cell")
+ 
+  print(plot2)
+  ggsave(plot2, file=paste0("DNA condensation",".png"), width = 5, height = 5.8, units = "in", dpi=300)
+
+```
